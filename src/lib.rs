@@ -1,3 +1,5 @@
+use std::ops::{Index, IndexMut};
+
 mod key {
     const INDEX_BITS: u64 = 32;
     const INDEX_MASK: u64 = (1u64 << INDEX_BITS) - 1;
@@ -16,6 +18,7 @@ mod key {
     }
 }
 
+#[derive(Debug)]
 pub struct VacantEntry<'a, T> {
     slab: &'a mut GenSlab<T>,
     idx: u32,
@@ -195,6 +198,20 @@ impl<'a, T> Iterator for IterMut<'a, T> {
             }
         }
         None
+    }
+}
+
+impl<T> Index<u64> for GenSlab<T> {
+    type Output = T;
+
+    fn index(&self, index: u64) -> &Self::Output {
+        self.get(index).expect("invalid or stale key")
+    }
+}
+
+impl<T> IndexMut<u64> for GenSlab<T> {
+    fn index_mut(&mut self, index: u64) -> &mut Self::Output {
+        self.get_mut(index).expect("invalid or stale key")
     }
 }
 
