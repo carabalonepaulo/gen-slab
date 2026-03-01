@@ -1,28 +1,18 @@
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(transparent)]
-pub struct Key(u64);
-
-impl Key {
+mod key {
     const INDEX_BITS: u64 = 32;
-    const INDEX_MASK: u64 = (1u64 << Self::INDEX_BITS) - 1;
+    const INDEX_MASK: u64 = (1u64 << INDEX_BITS) - 1;
 
     #[inline]
-    fn pack(idx: u32, generation: u32, salt: u64) -> Self {
-        let raw = ((generation as u64) << Self::INDEX_BITS) | (idx as u64 & Self::INDEX_MASK);
-        Self(raw ^ salt)
+    pub fn pack(idx: u32, generation: u32, salt: u64) -> u64 {
+        (((generation as u64) << INDEX_BITS) | (idx as u64 & INDEX_MASK)) ^ salt
     }
 
     #[inline]
-    fn unpack(self, salt: u64) -> (u32, u32) {
-        let raw = self.0 ^ salt;
-        let idx = (raw & Self::INDEX_MASK) as u32;
-        let generation = (raw >> Self::INDEX_BITS) as u32;
+    pub fn unpack(value: u64, salt: u64) -> (u32, u32) {
+        let raw = value ^ salt;
+        let idx = (raw & INDEX_MASK) as u32;
+        let generation = (raw >> INDEX_BITS) as u32;
         (idx, generation)
-    }
-
-    #[inline]
-    pub fn as_u64(self) -> u64 {
-        self.0
     }
 }
 
@@ -60,7 +50,7 @@ impl<T> GenSlab<T> {
         }
     }
 
-    pub fn insert(&mut self, value: T) -> Key {
+    pub fn insert(&mut self, value: T) -> u64 {
         let idx = {
             if let Some(i) = self.free.pop() {
                 i
@@ -77,11 +67,11 @@ impl<T> GenSlab<T> {
         let slot = &mut self.slots[idx as usize];
         slot.value = Some(value);
 
-        Key::pack(idx as u32, slot.generation, self.salt)
+        key::pack(idx as u32, slot.generation, self.salt)
     }
 
-    pub fn remove(&mut self, key: Key) -> Option<T> {
-        let (idx, generation) = key.unpack(self.salt);
+    pub fn remove(&mut self, key: u64) -> Option<T> {
+        let (idx, generation) = key::unpack(key, self.salt);
         let idx_usize = idx as usize;
 
         let slot = self.slots.get_mut(idx_usize)?;
@@ -95,8 +85,8 @@ impl<T> GenSlab<T> {
         Some(value)
     }
 
-    pub fn get(&self, key: Key) -> Option<&T> {
-        let (idx, generation) = key.unpack(self.salt);
+    pub fn get(&self, key: u64) -> Option<&T> {
+        let (idx, generation) = key::unpack(key, self.salt);
         let slot = self.slots.get(idx as usize)?;
         if slot.generation != generation {
             return None;
@@ -104,8 +94,8 @@ impl<T> GenSlab<T> {
         slot.value.as_ref()
     }
 
-    pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
-        let (idx, generation) = key.unpack(self.salt);
+    pub fn get_mut(&mut self, key: u64) -> Option<&mut T> {
+        let (idx, generation) = key::unpack(key, self.salt);
         let slot = self.slots.get_mut(idx as usize)?;
         if slot.generation != generation {
             return None;
@@ -140,12 +130,12 @@ pub struct Iter<'a, T> {
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = (Key, &'a T);
+    type Item = (u64, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
         for (idx, slot) in self.inner.by_ref() {
             if let Some(ref value) = slot.value {
-                return Some((Key::pack(idx as u32, slot.generation, self.salt), value));
+                return Some((key::pack(idx as u32, slot.generation, self.salt), value));
             }
         }
         None
@@ -158,12 +148,12 @@ pub struct IterMut<'a, T> {
 }
 
 impl<'a, T> Iterator for IterMut<'a, T> {
-    type Item = (Key, &'a mut T);
+    type Item = (u64, &'a mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
         for (idx, slot) in self.inner.by_ref() {
             if let Some(ref mut value) = slot.value {
-                return Some((Key::pack(idx as u32, slot.generation, self.salt), value));
+                return Some((key::pack(idx as u32, slot.generation, self.salt), value));
             }
         }
         None
@@ -205,7 +195,7 @@ mod tests {
 
         let key2 = slab.insert(2);
 
-        assert_ne!(key1.as_u64(), key2.as_u64());
+        assert_ne!(key1, key2);
 
         assert_eq!(slab.get(key1), None);
         assert_eq!(slab.get(key2), Some(&2));
@@ -282,7 +272,7 @@ mod tests {
         let mut slab = GenSlab::new();
 
         let key1 = slab.insert(123);
-        let (idx, _) = key1.unpack(slab.salt);
+        let (idx, _) = key::unpack(key1, slab.salt);
 
         slab.remove(key1);
 
