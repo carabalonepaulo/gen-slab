@@ -16,6 +16,28 @@ mod key {
     }
 }
 
+pub struct VacantEntry<'a, T> {
+    slab: &'a mut GenSlab<T>,
+    idx: u32,
+    generation: u32,
+}
+
+impl<'a, T> VacantEntry<'a, T> {
+    pub fn insert(self, value: T) -> u64 {
+        let slot = &mut self.slab.slots[self.idx as usize];
+        slot.value = Some(value);
+        key::pack(self.idx, self.generation, self.slab.salt)
+    }
+}
+
+impl<'a, T> Drop for VacantEntry<'a, T> {
+    fn drop(&mut self) {
+        if self.slab.slots[self.idx as usize].value.is_none() {
+            self.slab.free.push(self.idx);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Slot<T> {
     value: Option<T>,
@@ -50,7 +72,7 @@ impl<T> GenSlab<T> {
         }
     }
 
-    pub fn insert(&mut self, value: T) -> u64 {
+    fn reserve(&mut self) -> (u32, u32) {
         let idx = {
             if let Some(i) = self.free.pop() {
                 i
@@ -64,10 +86,26 @@ impl<T> GenSlab<T> {
             }
         };
 
+        let generation = self.slots[idx as usize].generation;
+        (idx, generation)
+    }
+
+    pub fn vacant_entry(&mut self) -> VacantEntry<'_, T> {
+        let (idx, generation) = self.reserve();
+        VacantEntry {
+            slab: self,
+            idx,
+            generation,
+        }
+    }
+
+    pub fn insert(&mut self, value: T) -> u64 {
+        let (idx, generation) = self.reserve();
+
         let slot = &mut self.slots[idx as usize];
         slot.value = Some(value);
 
-        key::pack(idx as u32, slot.generation, self.salt)
+        key::pack(idx as u32, generation, self.salt)
     }
 
     pub fn remove(&mut self, key: u64) -> Option<T> {
@@ -298,5 +336,69 @@ mod tests {
         assert_eq!(slab.get(k1), Some(&1));
         assert_eq!(slab.get(k2), Some(&2));
         assert_eq!(slab.get(k3), Some(&3));
+    }
+
+    #[test]
+    fn vacant_entry_drop_returns_slot() {
+        let mut slab = GenSlab::<usize>::new();
+
+        let entry = slab.vacant_entry();
+        let idx = entry.idx;
+
+        drop(entry);
+
+        assert_eq!(slab.free.len(), 1);
+        assert_eq!(slab.free[0], idx);
+    }
+
+    #[test]
+    fn vacant_entry_insert_does_not_return_slot() {
+        let mut slab = GenSlab::new();
+
+        let entry = slab.vacant_entry();
+        let idx = entry.idx;
+
+        let key = entry.insert(42);
+
+        assert!(slab.free.is_empty());
+        assert_eq!(slab.get(key), Some(&42));
+        assert_eq!(slab.slots[idx as usize].value, Some(42));
+    }
+
+    #[test]
+    fn vacant_entry_scope_drop() {
+        let mut slab = GenSlab::<i32>::new();
+
+        {
+            let _entry = slab.vacant_entry();
+        }
+
+        assert_eq!(slab.free.len(), 1);
+    }
+
+    #[test]
+    fn vacant_entry_behaves_like_insert() {
+        let mut slab = GenSlab::new();
+
+        let k1 = slab.insert(10);
+
+        let k2 = slab.vacant_entry().insert(20);
+
+        assert_eq!(slab.get(k1), Some(&10));
+        assert_eq!(slab.get(k2), Some(&20));
+    }
+
+    #[test]
+    fn vacant_entry_preserves_generation_logic() {
+        let mut slab = GenSlab::new();
+
+        let k1 = slab.insert(1);
+        slab.remove(k1);
+
+        let k2 = slab.vacant_entry().insert(2);
+
+        assert_ne!(k1, k2);
+        assert_eq!(slab.get(k1), None);
+        assert_eq!(slab.get(k2), Some(&2));
     }
 }
