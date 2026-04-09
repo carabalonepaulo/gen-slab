@@ -189,6 +189,36 @@ impl<T> Default for GenSlab<T> {
     }
 }
 
+impl<'a, T> IntoIterator for &'a GenSlab<T> {
+    type Item = (u64, &'a T);
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut GenSlab<T> {
+    type Item = (u64, &'a mut T);
+    type IntoIter = IterMut<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl<T> IntoIterator for GenSlab<T> {
+    type Item = (u64, T);
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            slab: self,
+            current_idx: 0,
+        }
+    }
+}
+
 pub struct Iter<'a, T> {
     inner: std::iter::Enumerate<std::slice::Iter<'a, Slot<T>>>,
     salt: u64,
@@ -219,6 +249,29 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         for (idx, slot) in self.inner.by_ref() {
             if let Some(ref mut value) = slot.value {
                 return Some((key::pack(idx as u32, slot.generation, self.salt), value));
+            }
+        }
+        None
+    }
+}
+
+pub struct IntoIter<T> {
+    slab: GenSlab<T>,
+    current_idx: usize,
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = (u64, T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_idx < self.slab.slots.len() {
+            let idx = self.current_idx;
+            self.current_idx += 1;
+
+            let slot = &mut self.slab.slots[idx];
+            if let Some(value) = slot.value.take() {
+                let key = key::pack(idx as u32, slot.generation, self.slab.salt);
+                return Some((key, value));
             }
         }
         None
