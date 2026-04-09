@@ -164,6 +164,23 @@ impl<T> GenSlab<T> {
             current_idx: 0,
         }
     }
+
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(u64, &mut T) -> bool,
+    {
+        for i in 0..self.slots.len() {
+            let slot = &mut self.slots[i];
+            if let Some(ref mut value) = slot.value {
+                let key = key::pack(i as u32, slot.generation, self.salt);
+                if !f(key, value) {
+                    slot.value.take();
+                    slot.generation = slot.generation.wrapping_add(1);
+                    self.free.push(i as u32);
+                }
+            }
+        }
+    }
 }
 
 impl<T> Default for GenSlab<T> {
@@ -505,5 +522,67 @@ mod tests {
 
         assert!(slab.iter().next().is_none(),);
         assert_eq!(slab.free.len(), 3,);
+    }
+
+    #[test]
+    fn retain_filters_elements() {
+        let mut slab = GenSlab::new();
+        slab.insert(10);
+        slab.insert(15);
+        slab.insert(20);
+        slab.insert(25);
+
+        slab.retain(|_key, val| *val % 2 == 0);
+
+        let values: Vec<i32> = slab.iter().map(|(_, &v)| v).collect();
+        assert_eq!(values.len(), 2);
+        assert!(values.contains(&10));
+        assert!(values.contains(&20));
+        assert!(!values.contains(&15));
+    }
+
+    #[test]
+    fn retain_invalidates_keys_of_removed_items() {
+        let mut slab = GenSlab::new();
+        let key_to_remove = slab.insert(100);
+        let key_to_keep = slab.insert(200);
+
+        slab.retain(|_key, val| *val != 100);
+
+        assert_eq!(slab.get(key_to_remove), None);
+        assert_eq!(slab.get(key_to_keep), Some(&200));
+
+        let key_new = slab.insert(300);
+        assert_ne!(key_to_remove, key_new);
+    }
+
+    #[test]
+    fn retain_allows_mutation_during_filtering() {
+        let mut slab = GenSlab::new();
+        slab.insert(10);
+        slab.insert(20);
+
+        slab.retain(|_key, val| {
+            *val *= 2;
+            *val <= 30
+        });
+
+        let values: Vec<i32> = slab.iter().map(|(_, &v)| v).collect();
+        assert_eq!(values, vec![20]);
+    }
+
+    #[test]
+    fn retain_adds_slots_to_free_list() {
+        let mut slab = GenSlab::new();
+        slab.insert(1);
+        slab.insert(2);
+        slab.insert(3);
+
+        let initial_free = slab.free.len();
+
+        slab.retain(|_, _| false);
+
+        assert_eq!(slab.free.len(), initial_free + 3);
+        assert!(slab.iter().next().is_none());
     }
 }
