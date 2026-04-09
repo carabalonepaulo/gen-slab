@@ -157,6 +157,13 @@ impl<T> GenSlab<T> {
             salt: self.salt,
         }
     }
+
+    pub fn drain(&mut self) -> Drain<'_, T> {
+        Drain {
+            slab: self,
+            current_idx: 0,
+        }
+    }
 }
 
 impl<T> Default for GenSlab<T> {
@@ -212,6 +219,39 @@ impl<T> Index<u64> for GenSlab<T> {
 impl<T> IndexMut<u64> for GenSlab<T> {
     fn index_mut(&mut self, index: u64) -> &mut Self::Output {
         self.get_mut(index).expect("invalid or stale key")
+    }
+}
+
+pub struct Drain<'a, T> {
+    slab: &'a mut GenSlab<T>,
+    current_idx: usize,
+}
+
+impl<'a, T> Iterator for Drain<'a, T> {
+    type Item = (u64, T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_idx < self.slab.slots.len() {
+            let idx = self.current_idx;
+            self.current_idx += 1;
+
+            let slot = &mut self.slab.slots[idx];
+            if let Some(value) = slot.value.take() {
+                let key = key::pack(idx as u32, slot.generation, self.slab.salt);
+
+                slot.generation = slot.generation.wrapping_add(1);
+                self.slab.free.push(idx as u32);
+
+                return Some((key, value));
+            }
+        }
+        None
+    }
+}
+
+impl<'a, T> Drop for Drain<'a, T> {
+    fn drop(&mut self) {
+        for _ in self {}
     }
 }
 
@@ -417,5 +457,53 @@ mod tests {
         assert_ne!(k1, k2);
         assert_eq!(slab.get(k1), None);
         assert_eq!(slab.get(k2), Some(&2));
+    }
+
+    #[test]
+    fn drain_empties_slab_and_returns_all_items() {
+        let mut slab = GenSlab::new();
+        let k1 = slab.insert("a");
+        let k2 = slab.insert("b");
+        let k3 = slab.insert("c");
+
+        let items: Vec<(u64, &str)> = slab.drain().collect();
+
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().any(|(k, v)| *k == k1 && *v == "a"));
+        assert!(items.iter().any(|(k, v)| *k == k2 && *v == "b"));
+        assert!(items.iter().any(|(k, v)| *k == k3 && *v == "c"));
+
+        assert!(slab.iter().next().is_none());
+        assert_eq!(slab.get(k1), None);
+    }
+
+    #[test]
+    fn drain_invalidates_old_keys_by_incrementing_generation() {
+        let mut slab = GenSlab::new();
+        let key_old = slab.insert("old");
+
+        drop(slab.drain());
+
+        let key_new = slab.insert("new");
+
+        assert_ne!(key_old, key_new,);
+        assert_eq!(slab.get(key_old), None);
+        assert_eq!(slab.get(key_new), Some(&"new"));
+    }
+
+    #[test]
+    fn drain_drop_cleans_remaining_elements() {
+        let mut slab = GenSlab::new();
+        slab.insert(10);
+        slab.insert(20);
+        slab.insert(30);
+
+        {
+            let mut d = slab.drain();
+            let _ = d.next();
+        }
+
+        assert!(slab.iter().next().is_none(),);
+        assert_eq!(slab.free.len(), 3,);
     }
 }
