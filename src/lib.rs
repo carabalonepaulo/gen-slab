@@ -26,6 +26,10 @@ pub struct VacantEntry<'a, T> {
 }
 
 impl<'a, T> VacantEntry<'a, T> {
+    pub fn id(&self) -> u64 {
+        key::pack(self.idx, self.generation, self.slab.salt)
+    }
+
     pub fn insert(self, value: T) -> u64 {
         let slot = &mut self.slab.slots[self.idx as usize];
         slot.value = Some(value);
